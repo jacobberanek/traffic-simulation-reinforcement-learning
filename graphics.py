@@ -5,7 +5,9 @@ class Graphics:
     def __init__(self, width, height):
         self.width = width
         self.height = height
-        self.canvas = tkinter.Canvas(width=width, height=height)
+        self.root = tkinter.Tk()
+        self.root.title("Traffic Simulation")
+        self.canvas = tkinter.Canvas(self.root, width=width, height=height)
         self.canvas.pack()
 
     def draw_rectangle(self, x1, y1, x2, y2, color):
@@ -146,6 +148,73 @@ class Graphics:
 
     def mainloop(self):
         tkinter.mainloop()
+
+
+    #Helpers used by simulator.py to drive the animation
+
+    def after(self, ms, callback):
+        #Schedule callback after ms milliseconds via Tkinter
+        self.root.after(ms, callback)
+
+    def draw_traffic_lights_for_state(self, light_state_value):
+        """
+        Draw all four traffic lights based on the current LightSState value string.
+        Called each tick instead of the hardcoded red lights in draw_four_way_interesection.
+        """
+
+        if light_state_value == "NS_GREEN":
+            ns_color, ew_color = "green", "red"
+        elif light_state_value == "NS_YELLOW":
+            ns_color, ew_color = "yellow", "red"
+        elif light_state_value == "EW_GREEN":
+            ns_color, ew_color = "red", "green"
+        elif light_state_value == "EW_YELLOW":
+            ns_color, ew_color = "red", "yellow"
+        else:
+            ns_color, ew_color = "red", "red"
+        
+        self.draw_traffic_light(int(self.width * 0.24), int(self.height * 0.24), ns_color, "N")
+        self.draw_traffic_light(int(self.width * 0.76), int(self.height * 0.24), ew_color, "E")
+        self.draw_traffic_light(int(self.width * 0.24), int(self.height * 0.76), ew_color, "W")
+        self.draw_traffic_light(int(self.width * 0.76), int(self.height * 0.76), ns_color, "S")
+
+    
+    def draw_queues(self, queues):
+        """
+        Draw up to 5 cars per direction queue approaching the intersection.
+        queues: dict[Direction -> CarQueue]
+        """
+
+        W, H = self.width, self.height
+        spacing = 55 #pixels between car in queues
+
+        for direction, queue in queues.items():
+            cars = list(queue)[:5]
+            dir_name = direction.value
+
+            for i, car in enumerate(cars):
+                label = str(car.carID)
+                if dir_name == "N":
+                    #Driving south, queued above intersection
+                    cx = int(W*0.41)
+                    cy = int(H*0.31) - i * spacing
+                    self.draw_car(cx, cy, "deepskyblue", label, rotation=90)
+                elif dir_name == "S":
+                    #Driving north, queued below intersection
+                    cx = int(W*0.49)
+                    cy = int(H*0.63) + i * spacing
+                    self.draw_car(cx, cy, "tomato", label, rotation=270)
+                elif dir_name == "E":
+                    #Driving east, queued right of intersection
+                    cx = int(W*0.63) + i * spacing
+                    cy = int(H*0.41)
+                    self.draw_car(cx, cy, "gold", label, rotation=180)
+                elif dir_name == "W":
+                    #Driving west, queued left of intersection
+                    cx = int(W*0.31) - i * spacing
+                    cy = int(H*0.49)
+                    self.draw_car(cx, cy, "limegreen", label, rotation=0)
+
 
 if __name__ == "__main__":
     graphics = Graphics(500, 500)

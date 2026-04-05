@@ -59,8 +59,8 @@ class CarQueue(deque):
 class Simulator:
     def __init__(
             self,
-            duration: int = 120,
-            delay: float = 0.025,
+            duration: int = 200,
+            delay: float = 0.5,
             moves_per_tick: int = 1
         ):
          
@@ -81,7 +81,16 @@ class Simulator:
 
         self.lightState = LightState.NS_GREEN #default starting state
 
-    def run(self):
+    def run(self, visual=False):
+
+        #Visualization can be toggled on or off when running simulation
+        if visual:
+            from graphics import Graphics
+            self.graphics = Graphics(500, 500)
+            self.graphics.after(0, self._tick)
+            self.graphics.mainloop()
+            return
+
         while self.time < self.duration:
             self.time += 1
             
@@ -101,6 +110,40 @@ class Simulator:
             self.print_state()
             time.sleep(self.delay)
         
+        self._print_summary()
+
+    #Single tick step, scheduled repeatedly via Tkinter after()
+    def _tick(self):
+        if self.time >= self.duration:
+            self._print_summary()
+            return #stop scheduling - simulation is done
+        
+        self.time +=1
+
+        if self.time % 3 == 0:
+            for _ in range(random.randint(1,3)):
+                self.create_car(random.choice(list(Direction)), random.choice(list(Move)))
+        
+        self.process_light()
+        
+        #For now, switch light every 10 ticks
+        if self.time % 10 == 0:
+            self.trigger_light_switch()
+
+        self.move_cars()
+
+        self.print_state()
+
+        #Draw the current state
+        self.graphics.clear()
+        self.graphics.draw_four_way_intersection()
+        self.graphics.draw_traffic_lights_for_state(self.lightState.value)
+        self.graphics.draw_queues(self.queues)
+
+        #Schedule next tick (delay converted from seconds to milliseconds)
+        self.graphics.after(int(self.delay * 1000), self._tick)
+    
+    def _print_summary(self):
         print("-" * 72)
         print("Simulation complete.")
 
@@ -184,13 +227,11 @@ class Simulator:
                 for direction in [Direction.NORTH, Direction.SOUTH]:
                     if self.queues[direction]:
                         self.queues[direction].move_car(self.time)
-                        break
             elif self.lightState == LightState.EW_GREEN: # Process east/west queues
                 for direction in [Direction.EAST, Direction.WEST]:
                     if self.queues[direction]:
                         self.queues[direction].move_car(self.time)
-                        break
 
 if __name__ == "__main__":
     simulator = Simulator()
-    simulator.run()
+    simulator.run(visual = True)
