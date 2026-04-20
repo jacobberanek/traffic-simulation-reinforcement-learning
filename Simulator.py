@@ -3,44 +3,49 @@ import time
 from collections import deque
 from enum import Enum
 
+from QLearningAgent import QLearningAgent, bucket, KEEP, SWITCH
+
+
 class Direction(Enum):
     NORTH = "N"
     SOUTH = "S"
-    EAST = "E"
-    WEST = "W"
+    EAST  = "E"
+    WEST  = "W"
 
 class Move(Enum):
     THROUGH = "THROUGH"
-    RIGHT = "RIGHT"
+    RIGHT   = "RIGHT"
 
 class LightState(Enum):
-    NS_GREEN = "NS_GREEN"
+    NS_GREEN  = "NS_GREEN"
     NS_YELLOW = "NS_YELLOW"
-    EW_GREEN = "EW_GREEN"
+    EW_GREEN  = "EW_GREEN"
     EW_YELLOW = "EW_YELLOW"
+
 
 class Car:
 
-    count = 0
-    waitTime = -1 # Placeholder until car is processed
+    count    = 0
+    waitTime = -1  # Placeholder until car is processed
 
     def __init__(self, origin, move, createdTick):
-        Car.count += 1
-        self.carID = Car.count
-        self.origin = origin
-        self.move = move
+        Car.count      += 1
+        self.carID      = Car.count
+        self.origin     = origin
+        self.move       = move
         self.createdTick = createdTick
 
     def update_wait_time(self, currentTick):
         self.waitTime = currentTick - self.createdTick
 
+
 # Created to efficiently track secondary stats for each queue
 class CarQueue(deque):
     def __init__(self):
         super().__init__()
-        self.avgWaitTime = 0
+        self.avgWaitTime       = 0
         self.totalCarsProcessed = 0
-        self.processedCarQueue = deque() # Queue to track processed cars for final stats
+        self.processedCarQueue  = deque()  # Queue to track processed cars for final stats
 
     def add_car(self, car):
         self.append(car)
@@ -49,135 +54,311 @@ class CarQueue(deque):
         if self:
             self.totalCarsProcessed += 1
             waitTime = currentTick - self[0].createdTick
-            self.avgWaitTime = (self.avgWaitTime * (self.totalCarsProcessed - 1) + waitTime) / self.totalCarsProcessed
+            self.avgWaitTime = (
+                (self.avgWaitTime * (self.totalCarsProcessed - 1) + waitTime)
+                / self.totalCarsProcessed
+            )
             processed_car = self.popleft()
             processed_car.update_wait_time(currentTick)
             self.processedCarQueue.append(processed_car)
             return processed_car
         return None
 
-class Simulator:
-    def __init__(
-            self,
-            duration: int = 200,
-            delay: float = 0.5,
-            moves_per_tick: int = 1
-        ):
-         
-        self.duration = duration
-        self.delay = delay
-        self.moves_per_tick = moves_per_tick
 
-        self.time = 0
-        self.yellowDelay = 3 # how many ticks the yellow light lasts
-        self.yellowTimeRemaining = 0 # active counter for yellow phase
+class Simulator:
+    """
+    Discrete-time traffic intersection simulator.
+
+    Parameters
+    ----------
+    duration : int
+        Number of ticks to run per episode.
+    delay : float
+        Seconds to sleep between ticks when running with visuals or in
+        human-readable mode.  Set to 0 for fast headless training.
+    moves_per_tick : int
+        How many cars the green-light directions can clear each tick.
+    agent : QLearningAgent or None
+        When provided the agent controls the light; otherwise the simulator
+        falls back to a fixed 10-tick switching schedule (the baseline).
+    fixed_switch_interval : int
+        Tick interval used by the fixed-timing baseline (ignored when an
+        agent is present).
+    seed : int or None
+        Random seed for reproducible runs.  None means non-deterministic.
+    """
+
+    def __init__(
+        self,
+        duration:              int             = 200,
+        delay:                 float           = 0.5,
+        moves_per_tick:        int             = 1,
+        agent:                 QLearningAgent  = None,
+        fixed_switch_interval: int             = 10,
+        seed:                  int | None      = 42, #Set to a trivial number to keep results consistent
+        max_green_ticks:       int             = 30,  # force switch if green held longer than this
+    ):
+        self.duration              = duration
+        self.delay                 = delay
+        self.moves_per_tick        = moves_per_tick
+        self.agent                 = agent
+        self.fixed_switch_interval = fixed_switch_interval
+        self.seed                  = seed
+        self.max_green_ticks   = max_green_ticks
+        self.current_green_ticks   = 0
+
+        self._rng = random.Random(seed)  # seeded RNG for reproducibility
+
+        self.time                = 0
+        self.yellowDelay         = 3  # how many ticks the yellow light lasts
+        self.yellowTimeRemaining = 0  # active counter for yellow phase
 
         self.queues = {
             Direction.NORTH: CarQueue(),
             Direction.SOUTH: CarQueue(),
-            Direction.EAST: CarQueue(),
-            Direction.WEST: CarQueue()
+            Direction.EAST:  CarQueue(),
+            Direction.WEST:  CarQueue(),
         }
 
-        self.lightState = LightState.NS_GREEN #default starting state
+        self.lightState = LightState.NS_GREEN  # default starting state
 
-    def run(self, visual=False):
+    # ── Reset ─────────────────────────────────────────────────────────────────
 
-        #Visualization can be toggled on or off when running simulation
+    def reset(self) -> None:
+        """
+        Reset the simulator back to tick 0 so the same agent can be trained
+        across multiple episodes without constructing a new object.
+
+        Note: Car.count is NOT reset so car IDs remain globally unique across
+        episodes, which is useful for debugging.
+        """
+        self.time                = 0
+        self.yellowTimeRemaining = 0
+        self.lightState          = LightState.NS_GREEN
+        self._rng                = random.Random(self.seed)  # re-seed for reproducibility
+        self.current_green_ticks = 0
+
+        self.queues = {
+            Direction.NORTH: CarQueue(),
+            Direction.SOUTH: CarQueue(),
+            Direction.EAST:  CarQueue(),
+            Direction.WEST:  CarQueue(),
+        }
+
+    # ── State observation ─────────────────────────────────────────────────────
+
+    def get_state(self) -> tuple:
+        """
+        Return a discretised snapshot of the intersection as a tuple:
+
+            (bucketed_N, bucketed_S, bucketed_E, bucketed_W, light_state)
+
+        This is what the agent observes each tick.  Queue lengths are bucketed
+        (see QLearningAgent.bucket) to keep the state space small.
+        """
+        return (
+            bucket(len(self.queues[Direction.NORTH])),
+            bucket(len(self.queues[Direction.SOUTH])),
+            bucket(len(self.queues[Direction.EAST])),
+            bucket(len(self.queues[Direction.WEST])),
+            self.lightState,
+        )
+
+    # ── Reward ────────────────────────────────────────────────────────────────
+
+    def get_reward(self, switched: bool = False) -> float:
+        ns_queue = len(self.queues[Direction.NORTH]) + len(self.queues[Direction.SOUTH])
+        ew_queue = len(self.queues[Direction.EAST])  + len(self.queues[Direction.WEST])
+
+        queue_penalty = -(ns_queue + ew_queue)
+
+        # reward switching when the waiting direction is backed up
+        bonus = 0
+        if switched:
+            if self.lightState in [LightState.NS_GREEN, LightState.NS_YELLOW]:
+                bonus = ew_queue * 2   # switching to EW is good when EW is backed up
+            else:
+                bonus = ns_queue * 2   # switching to NS is good when NS is backed up
+
+        return queue_penalty + bonus
+
+    # ── Main run loop ─────────────────────────────────────────────────────────
+
+    def run(self, visual: bool = False, verbose: bool = True) -> dict:
+        """
+        Run one full episode (self.duration ticks).
+
+        Parameters
+        ----------
+        visual  : bool  — open the Tkinter window and animate.
+        verbose : bool  — print per-tick state to console.
+
+        Returns
+        -------
+        dict with summary statistics for this episode (used by the training
+        loop to collect results without parsing printed output).
+        """
+
         if visual:
             from graphics import Graphics
             self.graphics = Graphics(500, 500)
             self.graphics.after(0, self._tick)
             self.graphics.mainloop()
-            return
+            # Stats are printed inside _print_summary; return empty dict for
+            # visual runs since the Tkinter loop is blocking.
+            return {}
 
         while self.time < self.duration:
             self.time += 1
-            
-            # For now, randomly create 1-3 cars every 3 ticks (with random direction and move)
-            if self.time % 3 == 0:
-                for _ in range(random.randint(1, 3)):
-                    self.create_car(random.choice(list(Direction)), random.choice(list(Move)))
 
+            # ── Spawn cars ────────────────────────────────────────────────
+            if self.time % 3 == 0:
+                for _ in range(self._rng.randint(1, 3)):
+                    self.create_car(
+                        self._rng.choice(list(Direction)),
+                        self._rng.choice(list(Move)),
+                    )
+
+            # ── Light processing (yellow countdown) ───────────────────────
             self.process_light()
 
-            # For now, switch light every 10 ticks
-            if self.time % 10 == 0:
-                self.trigger_light_switch()
+            # ── Agent or fixed-timing decision ────────────────────────────
+            if self.agent is not None:
+                state  = self.get_state()
+                action = self.agent.choose_action(state)
 
-            self.move_cars()
+                switched = False
+                if action == SWITCH or self.current_green_ticks >= self.max_green_ticks:
+                    switched = self.trigger_light_switch()
+                    if switched:
+                        self.current_green_ticks = 0
 
-            self.print_state()
-            time.sleep(self.delay)
-        
-        self._print_summary()
+                if self.lightState in [LightState.NS_GREEN, LightState.EW_GREEN]:
+                    self.current_green_ticks += 1
 
-    #Single tick step, scheduled repeatedly via Tkinter after()
+                self.move_cars()
+
+                reward     = self.get_reward(switched)
+                next_state = self.get_state()
+                self.agent.update(state, action, reward, next_state)
+
+            else:
+                # Fixed-timing baseline: switch every fixed_switch_interval ticks
+                if self.time % self.fixed_switch_interval == 0:
+                    self.trigger_light_switch()
+                self.move_cars()
+
+            if verbose:
+                self.print_state()
+                time.sleep(self.delay)
+
+        stats = self._collect_stats()
+        if verbose:
+            self._print_summary(stats)
+        return stats
+
+    # ── Tkinter animation tick ────────────────────────────────────────────────
+
     def _tick(self):
+        """Single tick step, scheduled repeatedly via Tkinter after()."""
         if self.time >= self.duration:
-            self._print_summary()
-            return #stop scheduling - simulation is done
-        
-        self.time +=1
+            stats = self._collect_stats()
+            self._print_summary(stats)
+            return  # stop scheduling — simulation is done
 
+        self.time += 1
+
+        # Spawn cars
         if self.time % 3 == 0:
-            for _ in range(random.randint(1,3)):
-                self.create_car(random.choice(list(Direction)), random.choice(list(Move)))
-        
-        self.process_light()
-        
-        #For now, switch light every 10 ticks
-        if self.time % 10 == 0:
-            self.trigger_light_switch()
+            for _ in range(self._rng.randint(1, 3)):
+                self.create_car(
+                    self._rng.choice(list(Direction)),
+                    self._rng.choice(list(Move)),
+                )
 
-        self.move_cars()
+        # Light processing
+        self.process_light()
+
+        # Agent or fixed-timing decision
+        if self.agent is not None:
+            state  = self.get_state()
+            action = self.agent.choose_action(state)
+            switched = False
+            if action == SWITCH or self.current_green_ticks >= self.max_green_ticks:
+                switched = self.trigger_light_switch()
+                if switched:
+                    self.current_green_ticks = 0
+            
+            if self.lightState in [LightState.NS_GREEN, LightState.EW_GREEN]:
+                self.current_green_ticks += 1
+            self.move_cars()
+            reward     = self.get_reward(switched)
+            next_state = self.get_state()
+            self.agent.update(state, action, reward, next_state)
+        else:
+            if self.time % self.fixed_switch_interval == 0:
+                self.trigger_light_switch()
+            self.move_cars()
 
         self.print_state()
 
-        #Draw the current state
+        # Draw the current state
         self.graphics.clear()
         self.graphics.draw_four_way_intersection()
         self.graphics.draw_traffic_lights_for_state(self.lightState.value)
         self.graphics.draw_queues(self.queues)
 
-        #Schedule next tick (delay converted from seconds to milliseconds)
+        # Schedule next tick (delay converted from seconds to milliseconds)
         self.graphics.after(int(self.delay * 1000), self._tick)
-    
-    def _print_summary(self):
+
+    # ── Stats helpers ─────────────────────────────────────────────────────────
+
+    def _collect_stats(self) -> dict:
+        """Return a dictionary of episode statistics."""
+        total_processed = sum(q.totalCarsProcessed for q in self.queues.values())
+        total_remaining = sum(len(q) for q in self.queues.values())
+
+        if total_processed > 0:
+            avg_wait = sum(
+                q.avgWaitTime * q.totalCarsProcessed for q in self.queues.values()
+            ) / total_processed
+        else:
+            avg_wait = 0.0
+
+        per_direction = {
+            d.value: (q.avgWaitTime if q.totalCarsProcessed > 0 else 0.0)
+            for d, q in self.queues.items()
+        }
+
+        longest = sorted(
+            (car for q in self.queues.values() for car in q.processedCarQueue),
+            key=lambda c: c.waitTime,
+            reverse=True,
+        )[:5]
+
+        return {
+            "total_processed": total_processed,
+            "total_remaining": total_remaining,
+            "avg_wait":        avg_wait,
+            "per_direction":   per_direction,
+            "longest_waits":   [(c.carID, c.waitTime) for c in longest],
+        }
+
+    def _print_summary(self, stats: dict) -> None:
         print("-" * 72)
         print("Simulation complete.")
-
-        total_cars_processed = sum(queue.totalCarsProcessed for queue in self.queues.values())
-        print(f"Total cars processed: {total_cars_processed}")
-
-        print(f"Total cars remaining in queues: {sum(len(queue) for queue in self.queues.values())}")
-
-        if total_cars_processed > 0:
-            avg_wait_time = sum(
-                queue.avgWaitTime * queue.totalCarsProcessed for queue in self.queues.values()
-            ) / total_cars_processed
-            print(f"Average wait time per car: {avg_wait_time:.2f} ticks")
-        else:
-            print("Average wait time per car: 0.00 ticks")
-
+        print(f"Total cars processed: {stats['total_processed']}")
+        print(f"Total cars remaining in queues: {stats['total_remaining']}")
+        print(f"Average wait time per car: {stats['avg_wait']:.2f} ticks")
         print("Average wait time per direction:")
-        for direction, queue in self.queues.items():
-            if queue.totalCarsProcessed > 0:
-                print(f"  {direction.value}: {queue.avgWaitTime:.2f} ticks")
-            else:
-                print(f"  {direction.value}: 0.00 ticks")
-
+        for d, w in stats["per_direction"].items():
+            print(f"  {d}: {w:.2f} ticks")
         print("Car IDs with longest wait times:")
-        longest_wait_cars = sorted(
-            (car for queue in self.queues.values() for car in queue.processedCarQueue),
-            key=lambda c: c.waitTime,
-            reverse=True
-        )[:5]
-        if longest_wait_cars:
-            for car in longest_wait_cars:
-                print(f"  Car ID {car.carID}: {car.waitTime} ticks")
+        if stats["longest_waits"]:
+            for car_id, wait in stats["longest_waits"]:
+                print(f"  Car ID {car_id}: {wait} ticks")
         else:
-            print("None")
+            print("  None")
 
     def print_state(self):
         print(f"Time: {self.time}")
@@ -187,51 +368,58 @@ class Simulator:
         for direction, queue in self.queues.items():
             print(f"{direction.value}: {[car.carID for car in queue]}")
 
+    # ── Car / light helpers ───────────────────────────────────────────────────
+
     def create_car(self, origin, move):
         car = Car(origin, move, self.time)
         self.queues[origin].add_car(car)
 
-    def process_light(self): # THIS NEEDS TO RUN EVERY TICK
-        if self.lightState in [LightState.NS_YELLOW, LightState.EW_YELLOW]: # If currently in yellow phase
-            if self.yellowTimeRemaining > 0: # Decrement timer if still yellow
+    def process_light(self):
+        """Must run every tick — handles the yellow-phase countdown."""
+        if self.lightState in [LightState.NS_YELLOW, LightState.EW_YELLOW]:
+            if self.yellowTimeRemaining > 0:
                 self.yellowTimeRemaining -= 1
-
-            if self.yellowTimeRemaining == 0: # Switch light if yellow phase just ended
+            if self.yellowTimeRemaining == 0:
                 self.switch_light()
 
-    def trigger_light_switch(self): # This is called by the user/agent to signal a switch, but the light will only switch if not yellow
+    def trigger_light_switch(self) -> bool:
+        """
+        Request a light phase change.  Returns False and does nothing if
+        the light is currently in a yellow phase (the agent must wait).
+        """
         if self.lightState in [LightState.NS_YELLOW, LightState.EW_YELLOW]:
-            return False # Light is currently yellow, cannot switch yet. Can add special handling later to let agent know that the switch failed
-
-        # Switch light immediately if green (no need to be in phase)
+            return False
         self.switch_light()
         return True
 
     def switch_light(self):
-        # Light is able to switch
+        """Advance the light state machine by one step."""
         if self.lightState == LightState.NS_GREEN:
-            self.lightState = LightState.NS_YELLOW
-            self.yellowTimeRemaining = self.yellowDelay # Reset yellow light timer
+            self.lightState          = LightState.NS_YELLOW
+            self.yellowTimeRemaining = self.yellowDelay
         elif self.lightState == LightState.NS_YELLOW:
             self.lightState = LightState.EW_GREEN
         elif self.lightState == LightState.EW_GREEN:
-            self.lightState = LightState.EW_YELLOW
-            self.yellowTimeRemaining = self.yellowDelay # Reset yellow light timer
+            self.lightState          = LightState.EW_YELLOW
+            self.yellowTimeRemaining = self.yellowDelay
         elif self.lightState == LightState.EW_YELLOW:
             self.lightState = LightState.NS_GREEN
 
     def move_cars(self):
-        # For now, just move one car from the green light direction
+        """Clear one car per green-direction per tick (or moves_per_tick cars)."""
         for _ in range(self.moves_per_tick):
-            if self.lightState == LightState.NS_GREEN: # Process north/south queues
+            if self.lightState == LightState.NS_GREEN:
                 for direction in [Direction.NORTH, Direction.SOUTH]:
                     if self.queues[direction]:
                         self.queues[direction].move_car(self.time)
-            elif self.lightState == LightState.EW_GREEN: # Process east/west queues
+            elif self.lightState == LightState.EW_GREEN:
                 for direction in [Direction.EAST, Direction.WEST]:
                     if self.queues[direction]:
                         self.queues[direction].move_car(self.time)
 
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     simulator = Simulator()
-    simulator.run(visual = True)
+    simulator.run(visual=True)
