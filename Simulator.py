@@ -1,3 +1,4 @@
+import math
 import random
 import time
 from collections import deque
@@ -97,6 +98,7 @@ class Simulator:
         fixed_switch_interval: int             = 10,
         seed:                  int | None      = 42, #Set to a trivial number to keep results consistent
         max_green_ticks:       int             = 30,  # force switch if green held longer than this
+        spawn_weights:         dict | None     = None,
     ):
         self.duration              = duration
         self.delay                 = delay
@@ -104,8 +106,20 @@ class Simulator:
         self.agent                 = agent
         self.fixed_switch_interval = fixed_switch_interval
         self.seed                  = seed
-        self.max_green_ticks   = max_green_ticks
+        self.max_green_ticks       = max_green_ticks
         self.current_green_ticks   = 0
+
+        # Weighted car spawning — default gives North 4x more traffic than other directions.
+        # Pass a dict like {Direction.NORTH: 4, Direction.SOUTH: 1, ...} to override.
+        default_weights = {
+            Direction.NORTH: 4,
+            Direction.SOUTH: 1,
+            Direction.EAST:  1,
+            Direction.WEST:  1,
+        }
+        weights = spawn_weights if spawn_weights is not None else default_weights
+        self._spawn_directions = list(weights.keys())
+        self._spawn_weights    = list(weights.values())
 
         self._rng = random.Random(seed)  # seeded RNG for reproducibility
 
@@ -166,19 +180,34 @@ class Simulator:
 
     # ── Reward ────────────────────────────────────────────────────────────────
 
-    def get_reward(self, switched: bool = False) -> float:
-        ns_queue = len(self.queues[Direction.NORTH]) + len(self.queues[Direction.SOUTH])
-        ew_queue = len(self.queues[Direction.EAST])  + len(self.queues[Direction.WEST])
+    def _weighted_queue_cost(self, directions: list) -> float:
+        """Sum exponential wait penalties across all cars in the given directions.
 
-        queue_penalty = -(ns_queue + ew_queue)
+        Each car contributes e^(wait_ticks / 20), so a car waiting 20 ticks
+        costs ~2.7x more than a freshly arrived car, and one waiting 60 ticks
+        costs ~20x more.  The /20 scale factor keeps values manageable over a
+        300-tick episode.
+        """
+        total = 0.0
+        for d in directions:
+            for car in self.queues[d]:
+                wait = self.time - car.createdTick
+                total += math.exp(wait / 10.0) # TODO: Tune this if needed so that the value doesn't blow up TOO fast
+        return total
+
+    def get_reward(self, switched: bool = False) -> float:
+        ns_cost = self._weighted_queue_cost([Direction.NORTH, Direction.SOUTH])
+        ew_cost = self._weighted_queue_cost([Direction.EAST,  Direction.WEST])
+
+        queue_penalty = -(ns_cost + ew_cost)
 
         # reward switching when the waiting direction is backed up
-        bonus = 0
+        bonus = 0.0
         if switched:
             if self.lightState in [LightState.NS_GREEN, LightState.NS_YELLOW]:
-                bonus = ew_queue * 2   # switching to EW is good when EW is backed up
+                bonus = ew_cost * 2   # switching to EW is good when EW is backed up
             else:
-                bonus = ns_queue * 2   # switching to NS is good when NS is backed up
+                bonus = ns_cost * 2   # switching to NS is good when NS is backed up
 
         return queue_penalty + bonus
 
@@ -215,7 +244,7 @@ class Simulator:
             if self.time % 3 == 0:
                 for _ in range(self._rng.randint(1, 3)):
                     self.create_car(
-                        self._rng.choice(list(Direction)),
+                        self._rng.choices(self._spawn_directions, weights=self._spawn_weights)[0],
                         self._rng.choice(list(Move)),
                     )
 
@@ -272,7 +301,7 @@ class Simulator:
         if self.time % 3 == 0:
             for _ in range(self._rng.randint(1, 3)):
                 self.create_car(
-                    self._rng.choice(list(Direction)),
+                    self._rng.choices(self._spawn_directions, weights=self._spawn_weights)[0],
                     self._rng.choice(list(Move)),
                 )
 
