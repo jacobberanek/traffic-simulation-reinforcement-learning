@@ -192,7 +192,7 @@ class Simulator:
         for d in directions:
             for car in self.queues[d]:
                 wait = self.time - car.createdTick
-                total += math.exp(wait / 10.0) # TODO: Tune this if needed so that the value doesn't blow up TOO fast
+                total += math.exp(wait / 20.0) # TODO: Tune this if needed so that the value doesn't blow up TOO fast
         return total
 
     def get_reward(self, switched: bool = False) -> float:
