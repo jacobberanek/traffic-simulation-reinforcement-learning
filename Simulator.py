@@ -1,3 +1,4 @@
+from collections.abc import Callable
 import math
 import random
 import time
@@ -98,7 +99,9 @@ class Simulator:
         fixed_switch_interval: int             = 10,
         seed:                  int | None      = 42, #Set to a trivial number to keep results consistent
         max_green_ticks:       int             = 30,  # force switch if green held longer than this
-        spawn_weights:         dict | None     = None,
+        traffic_pattern:       Callable | None   = None, # Optional function to generate traffic patterns
+        spawn_interval:        Callable | None   = None, # Optional function to determine spawn intervals
+        spawn_count:           Callable | None   = None, # Optional function to determine how many cars to spawn each interval
     ):
         self.duration              = duration
         self.delay                 = delay
@@ -117,9 +120,38 @@ class Simulator:
             Direction.EAST:  1,
             Direction.WEST:  1,
         }
-        weights = spawn_weights if spawn_weights is not None else default_weights
-        self._spawn_directions = list(weights.keys())
-        self._spawn_weights    = list(weights.values())
+
+        weights = default_weights
+        if traffic_pattern is not None:
+            # If a traffic pattern function is provided, we will call it each tick to get the current weights.
+            # In this case, we just need to set up the directions list for random.choices; the actual weights will come from the traffic_pattern function.
+            self._spawn_directions = list(default_weights.keys())
+            self._spawn_weights    = list(default_weights.values())
+        else:
+            self._spawn_directions = list(weights.keys())
+            self._spawn_weights    = list(weights.values())
+
+        if traffic_pattern is not None:
+            self.traffic_pattern = traffic_pattern
+        else:
+            self.traffic_pattern = lambda tick: {
+                Direction.NORTH: 4,
+                Direction.SOUTH: 1,
+                Direction.EAST:  1,
+                Direction.WEST:  1,
+            }
+
+
+        if spawn_interval is not None:
+            self.spawn_interval = spawn_interval
+        else:
+            self.spawn_interval = lambda tick: 3  # Spawn a car every 3 ticks
+
+        if spawn_count is not None:
+            self.spawn_count = spawn_count
+        else:
+            self.spawn_count = lambda tick: 2  # Spawn 2 cars per interval
+
 
         self._rng = random.Random(seed)  # seeded RNG for reproducibility
 
@@ -241,10 +273,11 @@ class Simulator:
             self.time += 1
 
             # ── Spawn cars ────────────────────────────────────────────────
-            if self.time % 3 == 0:
-                for _ in range(self._rng.randint(1, 3)):
+            if self.time % self.spawn_interval(self.time) == 0: # Based on spawn_interval function
+                pattern = self.traffic_pattern(self.time) # Based on traffic_pattern function
+                for _ in range(self.spawn_count(self.time)): # Based on spawn_count function
                     self.create_car(
-                        self._rng.choices(self._spawn_directions, weights=self._spawn_weights)[0],
+                        self._rng.choices(self._spawn_directions, weights=pattern.values())[0], # Based on traffic pattern function
                         self._rng.choice(list(Move)),
                     )
 
@@ -298,10 +331,11 @@ class Simulator:
         self.time += 1
 
         # Spawn cars
-        if self.time % 3 == 0:
-            for _ in range(self._rng.randint(1, 3)):
+        if self.time % self.spawn_interval(self.time) == 0:
+            pattern = self.traffic_pattern(self.time)
+            for _ in range(self.spawn_count(self.time)):
                 self.create_car(
-                    self._rng.choices(self._spawn_directions, weights=self._spawn_weights)[0],
+                    self._rng.choices(self._spawn_directions, weights=pattern.values())[0],
                     self._rng.choice(list(Move)),
                 )
 
