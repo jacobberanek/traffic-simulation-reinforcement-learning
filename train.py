@@ -44,8 +44,8 @@ FOR THIS SPECIFIC EXAMPLE, WE WILL CONSTRUCT THE CUSTOM BEHAVIOR FUNCTIONS AS FO
 '''
 
 def _hour_to_tick(hour: int) -> int:
-    """Convert an hour (0-23) to a tick (0-99)."""
-    return (hour % 24) * 100 // 24
+    """Convert an hour (0-23) to a tick within a full EPISODE_TICKS-length episode."""
+    return hour * EPISODE_TICKS // 24
 
 def traffic_pattern(tick: int) -> dict[Direction, int]:
     """Example traffic pattern function that varies over time."""
@@ -245,7 +245,7 @@ def main():
             gamma         = 0.95,
             epsilon       = 1.0,
             epsilon_min   = 0.05,
-            epsilon_decay = 0.97,
+            epsilon_decay = 0.99,
         )
         train(agent) #train(agent) for testing, #train_with_demo(agent) for demo
 

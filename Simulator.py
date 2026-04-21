@@ -224,7 +224,7 @@ class Simulator:
         for d in directions:
             for car in self.queues[d]:
                 wait = self.time - car.createdTick
-                total += math.exp(wait / 20.0) # TODO: Tune this if needed so that the value doesn't blow up TOO fast
+                total += math.exp(wait / 50.0) # TODO: Tune this if needed so that the value doesn't blow up TOO fast
         return total
 
     def get_reward(self, switched: bool = False) -> float:
@@ -241,9 +241,54 @@ class Simulator:
             else:
                 bonus = ns_cost * 2   # switching to NS is good when NS is backed up
 
-        return queue_penalty + bonus
+        # Throughput bonus: reward clearing cars
+        throughput_bonus = 0.0
+        if self.lightState == LightState.NS_GREEN:
+            throughput_bonus = (self.queues[Direction.NORTH].totalCarsProcessed +
+                               self.queues[Direction.SOUTH].totalCarsProcessed) * 0.1
+        elif self.lightState == LightState.EW_GREEN:
+            throughput_bonus = (self.queues[Direction.EAST].totalCarsProcessed +
+                               self.queues[Direction.WEST].totalCarsProcessed) * 0.1
+
+        # Penalty for switching too frequently: discourage unnecessary switching that could lead to inefficiency
+        switch_penalty = -0.5 if switched else 0.0
+
+        return queue_penalty + bonus + throughput_bonus + switch_penalty
 
     # ── Main run loop ─────────────────────────────────────────────────────────
+
+    def _step(self) -> None:
+        """Advance the simulation by one tick: spawn cars, process lights, decide, move."""
+        self.time += 1
+
+        if self.time % self.spawn_interval(self.time) == 0:
+            pattern = self.traffic_pattern(self.time)
+            for _ in range(self.spawn_count(self.time)):
+                self.create_car(
+                    self._rng.choices(self._spawn_directions, weights=pattern.values())[0],
+                    self._rng.choice(list(Move)),
+                )
+
+        self.process_light()
+
+        if self.agent is not None:
+            state  = self.get_state()
+            action = self.agent.choose_action(state)
+            switched = False
+            if action == SWITCH or self.current_green_ticks >= self.max_green_ticks:
+                switched = self.trigger_light_switch()
+                if switched:
+                    self.current_green_ticks = 0
+            if self.lightState in [LightState.NS_GREEN, LightState.EW_GREEN]:
+                self.current_green_ticks += 1
+            self.move_cars()
+            reward     = self.get_reward(switched)
+            next_state = self.get_state()
+            self.agent.update(state, action, reward, next_state)
+        else:
+            if self.time % self.fixed_switch_interval == 0:
+                self.trigger_light_switch()
+            self.move_cars()
 
     def run(self, visual: bool = False, verbose: bool = True) -> dict:
         """
@@ -270,46 +315,7 @@ class Simulator:
             return {}
 
         while self.time < self.duration:
-            self.time += 1
-
-            # ── Spawn cars ────────────────────────────────────────────────
-            if self.time % self.spawn_interval(self.time) == 0: # Based on spawn_interval function
-                pattern = self.traffic_pattern(self.time) # Based on traffic_pattern function
-                for _ in range(self.spawn_count(self.time)): # Based on spawn_count function
-                    self.create_car(
-                        self._rng.choices(self._spawn_directions, weights=pattern.values())[0], # Based on traffic pattern function
-                        self._rng.choice(list(Move)),
-                    )
-
-            # ── Light processing (yellow countdown) ───────────────────────
-            self.process_light()
-
-            # ── Agent or fixed-timing decision ────────────────────────────
-            if self.agent is not None:
-                state  = self.get_state()
-                action = self.agent.choose_action(state)
-
-                switched = False
-                if action == SWITCH or self.current_green_ticks >= self.max_green_ticks:
-                    switched = self.trigger_light_switch()
-                    if switched:
-                        self.current_green_ticks = 0
-
-                if self.lightState in [LightState.NS_GREEN, LightState.EW_GREEN]:
-                    self.current_green_ticks += 1
-
-                self.move_cars()
-
-                reward     = self.get_reward(switched)
-                next_state = self.get_state()
-                self.agent.update(state, action, reward, next_state)
-
-            else:
-                # Fixed-timing baseline: switch every fixed_switch_interval ticks
-                if self.time % self.fixed_switch_interval == 0:
-                    self.trigger_light_switch()
-                self.move_cars()
-
+            self._step()
             if verbose:
                 self.print_state()
                 time.sleep(self.delay)
@@ -328,44 +334,9 @@ class Simulator:
             self._print_summary(stats)
             return  # stop scheduling — simulation is done
 
-        self.time += 1
-
-        # Spawn cars
-        if self.time % self.spawn_interval(self.time) == 0:
-            pattern = self.traffic_pattern(self.time)
-            for _ in range(self.spawn_count(self.time)):
-                self.create_car(
-                    self._rng.choices(self._spawn_directions, weights=pattern.values())[0],
-                    self._rng.choice(list(Move)),
-                )
-
-        # Light processing
-        self.process_light()
-
-        # Agent or fixed-timing decision
-        if self.agent is not None:
-            state  = self.get_state()
-            action = self.agent.choose_action(state)
-            switched = False
-            if action == SWITCH or self.current_green_ticks >= self.max_green_ticks:
-                switched = self.trigger_light_switch()
-                if switched:
-                    self.current_green_ticks = 0
-            
-            if self.lightState in [LightState.NS_GREEN, LightState.EW_GREEN]:
-                self.current_green_ticks += 1
-            self.move_cars()
-            reward     = self.get_reward(switched)
-            next_state = self.get_state()
-            self.agent.update(state, action, reward, next_state)
-        else:
-            if self.time % self.fixed_switch_interval == 0:
-                self.trigger_light_switch()
-            self.move_cars()
-
+        self._step()
         self.print_state()
 
-        # Draw the current state
         self.graphics.clear()
         self.graphics.draw_four_way_intersection()
         self.graphics.draw_traffic_lights_for_state(self.lightState.value)
