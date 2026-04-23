@@ -15,76 +15,82 @@ Outputs
 import argparse
 import csv
 import os
+import random as _random
 
-from QLearningAgent import QLearningAgent
+from QLearningAgent import ACTIONS, QLearningAgent
 from Simulator import Direction, Simulator
+
+
+class _RandomAgent:
+    """Baseline that picks KEEP or SWITCH uniformly at random every tick."""
+    epsilon = 0.0  # duck-type compatibility with QLearningAgent
+
+    def choose_action(self, state: tuple) -> str:
+        return _random.choice(ACTIONS)
+
+    def update(self, *args) -> None:
+        pass
 
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 
-TRAIN_EPISODES = 1000    # how many episodes to train the agent
-EVAL_EPISODES  = 50     # how many episodes to evaluate each mode
-EPISODE_TICKS  = 2400    # length of each episode in simulator ticks
-EVAL_SEED      = 42     # fixed seed so all three modes see identical traffic
+TRAIN_EPISODES = 1000  # how many episodes to train the agent
+EVAL_EPISODES  = 50    # how many episodes to evaluate each mode
+EPISODE_TICKS  = 2400  # length of each episode in simulator ticks
+EVAL_SEED      = 42    # fixed seed so all three modes see identical traffic
 QTABLE_PATH    = "qtable.pkl"
 RESULTS_PATH   = "results.csv"
 
 
 # ── Custom functions ──────────────────────────────────────────────────────────
 
-'''
-FOR THIS SPECIFIC EXAMPLE, WE WILL CONSTRUCT THE CUSTOM BEHAVIOR FUNCTIONS AS FOLLOWS:
-1. One hour is equivalent to 100 ticks.
-2. Tick 0 is midnight.
-- From midnight to 6am, light traffic: 1 car from equally likely directions every 5 ticks.
-- From 6am to 9am, morning rush hour: Many cars from the north (4), and some from other directions (1 each) every 3 ticks.
-- From 9am to 4pm, moderate traffic: 2 cars from the north and 1 from other directions every 4 ticks.
-- From 4pm to 7pm, evening rush hour: Many cars from the south (4), and some from other directions (1 each) every 3 ticks.
-- From 7pm to midnight, light traffic again: 1 car from equally likely directions every 3 ticks.
-'''
+# 24-hour traffic cycle mapped to EPISODE_TICKS (1 hour = EPISODE_TICKS // 24 ticks, tick 0 = midnight):
+#   midnight – 6am  : light traffic, equal directions, 1 car every 5 ticks
+#   6am – 9am       : morning rush, heavy northbound (4:1:1:1), 3 cars every 3 ticks
+#   9am – 4pm       : moderate traffic, mild northbound (2:1:1:1), 2 cars every 4 ticks
+#   4pm – 7pm       : evening rush, heavy southbound (1:4:1:1), 3 cars every 3 ticks
+#   7pm – midnight  : light traffic, equal directions, 1 car every 3 ticks
 
 def _hour_to_tick(hour: int) -> int:
     """Convert an hour (0-23) to a tick within a full EPISODE_TICKS-length episode."""
     return hour * EPISODE_TICKS // 24
 
 def traffic_pattern(tick: int) -> dict[Direction, int]:
-    """Example traffic pattern function that varies over time."""
-    if tick < _hour_to_tick(6):  # Light traffic until 6am
+    if tick < _hour_to_tick(6):   # midnight – 6am: equal
         return {Direction.NORTH: 1, Direction.SOUTH: 1, Direction.EAST: 1, Direction.WEST: 1}
-    elif tick < _hour_to_tick(9):  # Morning rush hour until 9am
+    elif tick < _hour_to_tick(9): # 6am – 9am: morning rush northbound
         return {Direction.NORTH: 4, Direction.SOUTH: 1, Direction.EAST: 1, Direction.WEST: 1}
-    elif tick < _hour_to_tick(16): # Moderate traffic until 4pm
+    elif tick < _hour_to_tick(16): # 9am – 4pm: moderate northbound
         return {Direction.NORTH: 2, Direction.SOUTH: 1, Direction.EAST: 1, Direction.WEST: 1}
-    elif tick < _hour_to_tick(19): # Evening rush hour until 7pm
+    elif tick < _hour_to_tick(19): # 4pm – 7pm: evening rush southbound
         return {Direction.NORTH: 1, Direction.SOUTH: 4, Direction.EAST: 1, Direction.WEST: 1}
-    else:                          # Light traffic again until midnight
+    else:                          # 7pm – midnight: equal
         return {Direction.NORTH: 1, Direction.SOUTH: 1, Direction.EAST: 1, Direction.WEST: 1}
-    
+
+
 def spawn_interval(tick: int) -> int:
-    """Example spawn interval function that varies over time."""
-    if tick < _hour_to_tick(6):  # Light traffic until 6am
+    if tick < _hour_to_tick(6):    # midnight – 6am: light
         return 5
-    elif tick < _hour_to_tick(9):  # Morning rush hour until 9am
+    elif tick < _hour_to_tick(9):  # 6am – 9am: rush
         return 3
-    elif tick < _hour_to_tick(16): # Moderate traffic until 4pm
+    elif tick < _hour_to_tick(16): # 9am – 4pm: moderate
         return 4
-    elif tick < _hour_to_tick(19): # Evening rush hour until 7pm
+    elif tick < _hour_to_tick(19): # 4pm – 7pm: rush
         return 3
-    else:                          # Light traffic again until midnight
+    else:                          # 7pm – midnight: light
         return 3
-    
-# Spawns x amount of cars every spawn interval (custom defined by spawn_interval function)
+
+
 def spawn_count(tick: int) -> int:
-    """Example spawn count function that varies over time."""
-    if tick < _hour_to_tick(6):  # Light traffic until 6am
+    if tick < _hour_to_tick(6):    # midnight – 6am: light
         return 1
-    elif tick < _hour_to_tick(9):  # Morning rush hour until 9am
+    elif tick < _hour_to_tick(9):  # 6am – 9am: rush
         return 3
-    elif tick < _hour_to_tick(16): # Moderate traffic until 4pm
+    elif tick < _hour_to_tick(16): # 9am – 4pm: moderate
         return 2
-    elif tick < _hour_to_tick(19): # Evening rush hour until 7pm
+    elif tick < _hour_to_tick(19): # 4pm – 7pm: rush
         return 3
-    else:                          # Light traffic again until midnight
+    else:                          # 7pm – midnight: light
         return 1
         
 
@@ -96,7 +102,10 @@ def train(agent: QLearningAgent) -> None:
     print(f"Training Q-learning agent for {TRAIN_EPISODES} episodes...")
     print(f"{'='*60}")
 
-    sim = Simulator(duration=EPISODE_TICKS, delay=0, agent=agent, seed=None, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+    sim = Simulator(duration=EPISODE_TICKS, delay=0, agent=agent, seed=None,
+                    traffic_pattern=traffic_pattern,
+                    spawn_interval=spawn_interval,
+                    spawn_count=spawn_count)
 
     for ep in range(1, TRAIN_EPISODES + 1):
         sim.reset()
@@ -114,12 +123,18 @@ def train(agent: QLearningAgent) -> None:
 
 def train_with_demo(agent: QLearningAgent) -> None:
     print("\n--- Episode 1: Untrained agent (visual) ---")
-    sim = Simulator(duration=EPISODE_TICKS, delay=0.25, agent=agent, seed=EVAL_SEED, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+    sim = Simulator(duration=EPISODE_TICKS, delay=0.25, agent=agent, seed=EVAL_SEED,
+                    traffic_pattern=traffic_pattern,
+                    spawn_interval=spawn_interval,
+                    spawn_count=spawn_count)
     sim.run(visual=True)
     agent.end_episode()
 
     print(f"\n--- Episodes 2-{TRAIN_EPISODES - 1}: Headless training ---")
-    sim_fast = Simulator(duration=EPISODE_TICKS, delay=0, agent=agent, seed=None, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+    sim_fast = Simulator(duration=EPISODE_TICKS, delay=0, agent=agent, seed=None,
+                         traffic_pattern=traffic_pattern,
+                         spawn_interval=spawn_interval,
+                         spawn_count=spawn_count)
     for ep in range(2, TRAIN_EPISODES):
         sim_fast.reset()
         sim_fast.run(visual=False, verbose=False)
@@ -130,7 +145,10 @@ def train_with_demo(agent: QLearningAgent) -> None:
     print(f"\n--- Episodes {TRAIN_EPISODES}-{TRAIN_EPISODES + 1}: Trained agent (visual) ---")
     agent.epsilon = 0.0
     for ep in range(TRAIN_EPISODES, TRAIN_EPISODES + 2):
-        sim_demo = Simulator(duration=EPISODE_TICKS, delay=0.25, agent=agent, seed=EVAL_SEED, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+        sim_demo = Simulator(duration=EPISODE_TICKS, delay=0.25, agent=agent, seed=EVAL_SEED,
+                             traffic_pattern=traffic_pattern,
+                             spawn_interval=spawn_interval,
+                             spawn_count=spawn_count)
         sim_demo.run(visual=True)
 
 
@@ -155,28 +173,28 @@ def evaluate_mode(mode: str, agent: QLearningAgent | None = None) -> list[dict]:
             saved_epsilon    = agent.epsilon
             agent.epsilon    = 0.0
             sim = Simulator(duration=EPISODE_TICKS, delay=0,
-                            agent=agent, seed=episode_seed, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+                            agent=agent, seed=episode_seed,
+                            traffic_pattern=traffic_pattern,
+                            spawn_interval=spawn_interval,
+                            spawn_count=spawn_count)
             stats = sim.run(visual=False, verbose=False)
             agent.epsilon = saved_epsilon  # restore so training can resume
 
         elif mode == "fixed":
             sim = Simulator(duration=EPISODE_TICKS, delay=0,
                             agent=None, fixed_switch_interval=10,
-                            seed=episode_seed, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+                            seed=episode_seed,
+                            traffic_pattern=traffic_pattern,
+                            spawn_interval=spawn_interval,
+                            spawn_count=spawn_count)
             stats = sim.run(visual=False, verbose=False)
 
         elif mode == "random":
-            from QLearningAgent import QLearningAgent as _QL, ACTIONS
-            import random as _r
-
-            # A "random agent" just picks KEEP or SWITCH randomly every tick
-            class RandomAgent:
-                epsilon = 0.0  # duck-type compatibility
-                def choose_action(self, state): return _r.Random(None).choice(ACTIONS)
-                def update(self, *args): pass
-
             sim = Simulator(duration=EPISODE_TICKS, delay=0,
-                            agent=RandomAgent(), seed=episode_seed, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+                            agent=_RandomAgent(), seed=episode_seed,
+                            traffic_pattern=traffic_pattern,
+                            spawn_interval=spawn_interval,
+                            spawn_count=spawn_count)
             stats = sim.run(visual=False, verbose=False)
 
         else:
@@ -247,7 +265,7 @@ def main():
             epsilon_min   = 0.05,
             epsilon_decay = 0.99,
         )
-        train(agent) #train(agent) for testing, #train_with_demo(agent) for demo
+        train(agent)
 
     # Evaluate all three modes
     print(f"\nEvaluating all modes over {EVAL_EPISODES} episodes each...")
@@ -263,7 +281,10 @@ def main():
         print("Launching visual demo of trained agent...")
         agent.epsilon = 0.0
         sim = Simulator(duration=EPISODE_TICKS, delay=0.1,
-                        agent=agent, seed=EVAL_SEED, traffic_pattern=traffic_pattern, spawn_interval=spawn_interval, spawn_count=spawn_count)
+                        agent=agent, seed=EVAL_SEED,
+                        traffic_pattern=traffic_pattern,
+                        spawn_interval=spawn_interval,
+                        spawn_count=spawn_count)
         sim.run(visual=True)
 
 

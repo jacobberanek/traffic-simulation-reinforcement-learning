@@ -1,7 +1,9 @@
 import tkinter
 import math
 
+
 class Graphics:
+    """Tkinter-based renderer for the traffic intersection simulator."""
     def __init__(self, width, height):
         self.width = width
         self.height = height
@@ -33,12 +35,11 @@ class Graphics:
         cx, cy = x + 25, y + 12.5
         
         if rotation == 0:
-            # Original orientation (pointing right)
             self.draw_rectangle(x, y, x + 50, y + 25, color)
             self.draw_circle(x + 10, y + 25, 5, "black")
             self.draw_circle(x + 40, y + 25, 5, "black")
         else:
-            # Rotate vehicle components
+            # Rotate vehicle body and wheels
             corners = [
                 self._rotate_point(x, y, cx, cy, rotation),
                 self._rotate_point(x + 50, y, cx, cy, rotation),
@@ -61,14 +62,13 @@ class Graphics:
         cx, cy = x + 35, y + 15
         
         if rotation == 0:
-            # Original orientation (pointing right)
             self.draw_rectangle(x, y, x + 70, y + 30, color)
             self.draw_rectangle(x + 50, y, x + 70, y + 30, color)
             self.draw_circle(x + 10, y + 30, 5, "black")
             self.draw_circle(x + 40, y + 30, 5, "black")
             self.draw_circle(x + 60, y + 30, 5, "black")
         else:
-            # Rotate truck cabin (rear body)
+            # Rotate truck body
             cabin_corners = [
                 self._rotate_point(x, y, cx, cy, rotation),
                 self._rotate_point(x + 70, y, cx, cy, rotation),
@@ -77,8 +77,8 @@ class Graphics:
             ]
             flat_coords = [coord for point in cabin_corners for coord in point]
             self.canvas.create_polygon(flat_coords, fill=color, outline="black")
-            
-            # Rotate truck bed (cab)
+
+            # Rotate cab
             bed_corners = [
                 self._rotate_point(x + 50, y, cx, cy, rotation),
                 self._rotate_point(x + 70, y, cx, cy, rotation),
@@ -150,17 +150,13 @@ class Graphics:
         tkinter.mainloop()
 
 
-    #Helpers used by simulator.py to drive the animation
+    # ── Helpers used by Simulator to drive the animation ─────────────────────
 
-    def after(self, ms, callback):
-        #Schedule callback after ms milliseconds via Tkinter
+    def after(self, ms: int, callback) -> None:
         self.root.after(ms, callback)
 
-    def draw_traffic_lights_for_state(self, light_state_value):
-        """
-        Draw all four traffic lights based on the current LightSState value string.
-        Called each tick instead of the hardcoded red lights in draw_four_way_interesection.
-        """
+    def draw_traffic_lights_for_state(self, light_state_value: str) -> None:
+        """Draw all four traffic lights based on the current LightState value string."""
 
         if light_state_value == "NS_GREEN":
             ns_color, ew_color = "green", "red"
@@ -186,33 +182,33 @@ class Graphics:
         """
 
         W, H = self.width, self.height
-        spacing = 55 #pixels between car in queues
+        spacing = 55  # pixels between cars in queue
 
         for direction, queue in queues.items():
             cars = list(queue)[:5]
             dir_name = direction.value
 
             for i, car in enumerate(cars):
-                label = str(car.carID)
+                label = str(car.car_id)
                 if dir_name == "N":
-                    #Driving south, queued above intersection
-                    cx = int(W*0.41)
-                    cy = int(H*0.31) - i * spacing
+                    # Driving south, queued above intersection
+                    cx = int(W * 0.41)
+                    cy = int(H * 0.31) - i * spacing
                     self.draw_car(cx, cy, "deepskyblue", label, rotation=90)
                 elif dir_name == "S":
-                    #Driving north, queued below intersection
-                    cx = int(W*0.49)
-                    cy = int(H*0.63) + i * spacing
+                    # Driving north, queued below intersection
+                    cx = int(W * 0.49)
+                    cy = int(H * 0.63) + i * spacing
                     self.draw_car(cx, cy, "tomato", label, rotation=270)
                 elif dir_name == "E":
-                    #Driving east, queued right of intersection
-                    cx = int(W*0.63) + i * spacing
-                    cy = int(H*0.41)
+                    # Driving west, queued right of intersection
+                    cx = int(W * 0.63) + i * spacing
+                    cy = int(H * 0.41)
                     self.draw_car(cx, cy, "gold", label, rotation=180)
                 elif dir_name == "W":
-                    #Driving west, queued left of intersection
-                    cx = int(W*0.31) - i * spacing
-                    cy = int(H*0.49)
+                    # Driving east, queued left of intersection
+                    cx = int(W * 0.31) - i * spacing
+                    cy = int(H * 0.49)
                     self.draw_car(cx, cy, "limegreen", label, rotation=0)
 
 
